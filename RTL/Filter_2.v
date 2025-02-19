@@ -199,6 +199,7 @@ always@(*) begin
 	end
 endcase 
 end
+// output logic
 always@(*) begin  
    wr_file_reg = 1 ;
   case(curr_state) 
