@@ -133,6 +133,7 @@ always@(negedge i_hav or negedge i_vav or negedge rstb) begin
  state : 1000  -> process the pixels in the last row 
  state : 1001  -> process the pixel at the lower-right corner of the last image row
   */ 
+// current state logic
 always@(posedge clk or negedge rstb) begin 
   if(~rstb) begin 
   curr_state <= 0 ; 
