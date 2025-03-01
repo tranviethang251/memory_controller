@@ -50,20 +50,25 @@ reg [DATA_WIDTH-1:0] o_s7 ;
 reg [DATA_WIDTH-1:0] o_s8 ;
 reg [DATA_WIDTH-1:0] o_s9 ;
 // filtered result 
-wire [15:0] f ; 
+reg [15:0] f ; 
 // edge resutl 
-wire [DATA_WIDTH:0] e ; 
+reg [DATA_WIDTH-1:0] e ; 
 // enhanced result 
-wire [17:0] r ; 
-// reg use for write to test file.
-reg wr_file_reg ; 
+reg [17:0] r ; 
+// last tick 
+reg lst_tick ;
 // enable signal
 wire wr_en ;   
-// check for last line of image 
-reg lst_tick ; 
+// delay i_hav 1 clock cycle 
+reg de_i_hav ; 
+// negative edge signal of i_hav
+wire neg_i_hav;
 // SRAM declaration 
 reg [DATA_WIDTH-1:0]ram_1[WIDTH_IMAG-1:0] ; // the length of SRAM = WIDTH of image. It stores DATA_WIDTH bits for each image point
 reg [DATA_WIDTH-1:0]ram_2[WIDTH_IMAG-1:0] ; // the length of SRAM = WIDTH of image. It stores DATA_WIDTH bits for each image point
+// shift register 
+reg [WIDTH_IMAG-1:0] r_reg ; 
+wire [WIDTH_IMAG-1:0] r_next ;
 // body 
 // SRAM controller
 always@(posedge clk or negedge rstb) 
@@ -108,19 +113,24 @@ assign w_s7 = ram_2[ram_addr] ;
 assign w_s8 = s5 ; 
 assign w_s9 = s6 ; 
 // enable signal 
-assign wr_en = (i_hav&i_vav)|lst_tick;  
+assign wr_en = (i_hav&i_vav)|(lst_tick);  
 // verical counter used to count the row of image which is useful to decide the state of machine.
-always@(negedge i_hav or negedge i_vav or negedge rstb) begin 
-   if(~i_vav||~rstb) ver_counter <= 0 ; 
-   else 
-      ver_counter <= (ver_counter==(HEIGHT_IMAG-1)) ? 0 : ver_counter + 1 ; // ver_counter == (HEIGHT_IMAG-1) to  prevent ver_counter from going out [0->HEIGHT-1]
+// verical counter 
+always@(posedge clk or negedge rstb) begin 
+   if(~rstb) ver_counter <=0 ; 
+   else if(neg_i_hav) ver_counter <= (ver_counter==(HEIGHT_IMAG-1)) ? 0 : ver_counter + 1; 
    end 	
+always@(posedge clk or negedge rstb) begin 
+    if(~rstb) de_i_hav <=0 ; 
+    else de_i_hav <= i_hav ; 
+    end 
+assign neg_i_hav = (~i_hav)&de_i_hav; 
 // FSM 
+// state register
   reg [3:0] curr_state ; 
   reg [3:0] next_state ; 
-// 
- 
-/* 
+// state table
+/* There are nine pixel cases that need to be processed
  state : 0000  -> do not process 
  state : 0001  -> process upper-left corner pixel at the first line of image 
  state : 0010  -> process pixels in the first line of image
@@ -132,8 +142,8 @@ always@(negedge i_hav or negedge i_vav or negedge rstb) begin
  state : 0111  -> process the pixel at the lower-left corner of the last image row
  state : 1000  -> process the pixels in the last row 
  state : 1001  -> process the pixel at the lower-right corner of the last image row
-  */ 
-// current state logic
+  */
+  // current state logic 
 always@(posedge clk or negedge rstb) begin 
   if(~rstb) begin 
   curr_state <= 0 ; 
@@ -173,7 +183,7 @@ always@(*) begin
        lst_tick   = 0 ;                                            // the last row are not writing to ram
    end
   4'b0110: begin 
-       next_state = (ver_counter==0) ? 4'b1111 : 4'b0000;            // Check the last row 
+       next_state = (ver_counter==HEIGHT_IMAG-1) ? 4'b1111 : 4'b0000;            // Check the last row 
 	     lst_tick    = 0 ;                                            // if ver_counter = 0 at this state means that the last row wrote to the ram_1. 
    end
   4'b1111 : begin 
@@ -199,9 +209,8 @@ always@(*) begin
 	end
 endcase 
 end
-// output logic
+// output logic 
 always@(*) begin  
-   wr_file_reg = 1 ;
   case(curr_state) 
     4'b0001 : begin 
       o_s1 = w_s1 ; 
@@ -312,19 +321,56 @@ always@(*) begin
       o_s7 = 0 ;
       o_s8 = 0 ;
       o_s9 = 0 ;
-      wr_file_reg = 0 ; 
    end 
   endcase 
  end 
- 
- 
 // mean filter 
-assign f  = (16'd0+o_s1 + o_s2 + o_s3 + o_s4 + o_s5 + o_s6 + o_s7 + o_s8 + o_s9)*28 ;
+reg d_wr_file_1 ; // delay write to file 1 clock cycle
+always@(posedge clk or negedge rstb) begin 
+   if(!rstb) begin  
+     d_wr_file_1 <=0 ; 
+     f           <=0 ;
+  end 
+  else begin 
+    d_wr_file_1 <= (|curr_state)&(|(~curr_state)) ;
+    f           <= (16'd0+o_s1 + o_s2 + o_s3 + o_s4 + o_s5 + o_s6 + o_s7 + o_s8 + o_s9)*28 ;   // we use $signed for representing the negative number
+    end
+end  
+// f[15:8] because the filter is 3*3 mean filter so if we want to devide by 9 we first multiple f by 28 then we take f[15:8] which is result <=> f/9 ; 
 //edge = origin - base 
-assign e  = $signed({1'b0,o_s5}) - $signed({1'b0,f[15:8]}) ; // we use $signed for representing the negative number
+reg d_wr_file_2 ;
+reg[15:0] de_f_1;               // delay write to file 2 clock cycle
+reg[DATA_WIDTH-1:0] de_o_s5;    // delay o_s5 1 clock cycle 
+always@(posedge clk or negedge rstb) begin 
+   if(!rstb) begin  
+     d_wr_file_2 <=0 ;
+     de_f_1      <=0 ; 
+     e           <=0 ;
+     de_o_s5     <=0 ; 
+  end 
+  else 
+  begin 
+    d_wr_file_2 <= d_wr_file_1 ;
+    de_f_1      <= f; 
+    de_o_s5     <= o_s5 ; 
+    e           <= $signed({1'b0,de_o_s5}) - $signed({1'b0,f[15:8]}) ; // we use $signed for representing the negative number
+    end
+end 
 // enhanced image = base + WEIGHT*edge 
-assign r  = $signed({1'b0,WEIGHT})*$signed(e) + $signed({1'b0,f[15:8]}) ; 
+reg d_wr_file_3 ;   // delay write to file 3 clock cycle 
+always@(posedge clk or negedge rstb) begin 
+   if(!rstb) begin  
+     d_wr_file_3 <=0 ;
+     r           <=0 ;
+  end 
+  else begin 
+    d_wr_file_3 <= d_wr_file_2 ;
+    r           <= $signed({1'b0,WEIGHT})*$signed(e) + $signed({1'b0,de_f_1[15:8]})  ; // we use $signed for representing the negative number
+    end
+end 
+// assign r  = $signed({1'b0,WEIGHT})*$signed(e) + $signed({1'b0,f[15:8]}) ; 
 // output 
+assign wr_file = d_wr_file_3 ; 
 assign data_out = (r[17]==1)? 8'd0 : (r[8]==1) ? 8'd255 : r[7:0]; 
 /* 
    if r[17] = 1, then r is a negative number so we set data_out = 0 
@@ -332,9 +378,4 @@ assign data_out = (r[17]==1)? 8'd0 : (r[8]==1) ? 8'd255 : r[7:0];
    if r[8] = 1 which means that overflow happens so we set data_o = 255 
    if r[8] = 0 , there are no problem with r , so data_o = r[7:0] 
 */    
-assign wr_file = wr_file_reg ;  
 endmodule 
-
-
-
-
